@@ -1,87 +1,44 @@
-name: Sync IPTV Playlists
+name: Sync with Upstream
 
 on:
   schedule:
-    - cron: '0 */2 * * *'        # 每 2 小时触发（UTC）
+    - cron: '0 */2 * * *' # 每2小时执行一次
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  update:
+  sync:
     runs-on: ubuntu-latest
-    env:
-      TOKEN: ${{ secrets.M3U_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Download and Update IPTV Playlists
+      - name: Set up Git
         run: |
-          set -e
-          echo "🎵 开始下载 IPTV 播放列表..."
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          base="https://mursor.ottiptv.cc"
-          files=("iptv.m3u" "yylunbo.m3u" "huyayqk.m3u" "douyuyqk.m3u" "bililive.m3u")
+      - name: Add Upstream Remote
+        run: |
+          git remote add upstream https://github.com/mursor1985/LIVE.git
+          git fetch upstream
 
-          # ---- 只在下载成功后才覆盖原文件 ----
-          download_with_retry () {
-            local url="$1"
-            local outfile="$2"
-            local tmpfile="${outfile}.tmp"   # 临时文件
-            local attempt=1
-            local max=5
-
-            rm -f "$tmpfile"                 # 保证干净起步
-            while [ $attempt -le $max ]; do
-              echo "➡️  [$attempt/$max] 下载 $outfile ..."
-              if wget -q --timeout=15 --connect-timeout=10 "$url" -O "$tmpfile"; then
-                if [ -s "$tmpfile" ]; then   # 有内容才算成功
-                  mv "$tmpfile" "$outfile"
-                  echo "✅ $outfile 下载并覆盖完成"
-                  return 0
-                fi
-              fi
-              echo "⚠️  $outfile 下载失败，等待 $attempt 秒后重试..."
-              sleep $attempt
-              attempt=$(( attempt + 1 ))
-            done
-
-            echo "❌ $outfile 最终下载失败，保留旧版本"
-            rm -f "$tmpfile"                 # 不动旧文件
-            return 1
-          }
-
-          # 下载所有文件
-          for f in "${files[@]}"; do
-            download_with_retry "${base}/${f}?token=${TOKEN}" "$f" || true
-          done
-
-          echo "📊 文件下载状态："
-          for f in "${files[@]}"; do
-            if [ -s "$f" ]; then
-              echo "✅ $f - $(wc -c < "$f") 字节"
-            else
-              echo "❌ $f - 文件不存在或为空"
-            fi
-          done
-
-          git config --local user.name  "github-actions[bot]"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-
-          # 只有真正发生变更时才提交
-          if git diff --quiet -- *.m3u; then
-            echo "ℹ️ 没有检测到文件变更，跳过提交"
-            exit 0
+      - name: Merge Upstream Changes
+        run: |
+          # 检查上游是否有新提交
+          if git log origin/main..upstream/main | grep 'commit'; then
+            echo "发现新提交，开始合并..."
+            # 使用rebase合并，并设置冲突时优先保留上游更改
+            git pull upstream main --rebase --strategy-option=theirs
+            echo "✅ 合并完成"
+          else
+            echo "ℹ️ 已是最新版本，无需同步"
           fi
 
-          git add *.m3u
-          git commit -m "chore: auto-update IPTV playlists - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "✅ 文件已提交"
-
-      - name: Push changes
+      - name: Push to Fork
+        run: |
+          git push origin main --force-with-lease
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git push origin ${{ github.ref_name }}
-          echo "🚀 更新已推送到仓库"
